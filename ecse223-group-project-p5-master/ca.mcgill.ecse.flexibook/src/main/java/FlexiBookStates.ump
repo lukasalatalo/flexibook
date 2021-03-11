@@ -1,0 +1,288 @@
+
+class Appointment{
+
+	depend java.sql.Date;
+	depend java.sql.Time;
+	depend java.time.LocalTime;
+	depend java.time.LocalDate;
+	depend java.time.temporal.ChronoUnit;
+	depend java.text.SimpleDateFormat;
+
+
+	AppointmentState { 
+		Booked{
+	
+			updateAppointment(TimeSlot aTimeSlot, Boolean changeService, BookableService aService, Boolean addItem, ComboItem optionalServices) [isTimeSlotAvailable(aTimeSlot) && !sameDay()] /{
+				doUpdateAppointment(aTimeSlot, changeService, aService, addItem, optionalServices);
+			}->Booked;
+		
+			updateAppointment(TimeSlot aTimeSlot, Boolean change, BookableService aService, Boolean add, ComboItem optionalServices) [!isTimeSlotAvailable(aTimeSlot) || sameDay()==true] /{
+				rejectUpdateAppointment();
+			}->Booked;
+		
+			cancelAppointment(Customer aCustomer) [!sameDay()]->Final;
+		
+			cancelAppointment(Customer aCustomer) [sameDay()] /{
+				rejectCancelAppointment();
+			}->Booked;
+		
+			startAppointment() [isDuringTimeSlot()]->InProgress;
+			
+			customerNoShow() [isDuringTimeSlot()] /{
+				doCustomerNoShow();
+			}->Final;
+			
+		}
+		
+		
+		InProgress{
+			
+			updateAppointment(TimeSlot aTimeSlot, Boolean changeService, BookableService aService, Boolean addItem, ComboItem optionalServices) [isTimeSlotAvailable(aTimeSlot)] /{
+				doUpdateAppointment(aTimeSlot, changeService, aService, addItem, optionalServices);
+			}->InProgress;
+		
+			updateAppointment(TimeSlot aTimeSlot, boolean change, BookableService aService, boolean add, ComboItem optionalServices) [!isTimeSlotAvailable(aTimeSlot)] /{
+				rejectUpdateAppointment();
+			}->InProgress;
+			
+			finishAppointment()->Final;
+			
+			cancelAppointment(Customer aCustomer) [hasAppointmentStarted()] /{
+				rejectCancelAppointment();
+			}->InProgress;
+		}
+		
+		
+		
+		
+		
+		
+	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private boolean hasAppointmentStarted() {
+		if (this.getAppointmentState() != Appointment.AppointmentState.Booked) {
+    		return true;
+    	}
+    	return false;
+ 	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private void doCustomerNoShow(){
+		this.getCustomer().isNoShow();
+		flexiBook.removeAppointment(this);
+	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private void doUpdateAppointment(TimeSlot ts, Boolean c, BookableService s, Boolean a, ComboItem optItem){
+		this.setTimeSlot(ts);
+
+		if (c == true) {
+			this.setBookableService(s);
+			return;
+		}
+
+		if (this.getBookableService() instanceof ServiceCombo) {
+			ServiceCombo aServiceCombo = (ServiceCombo) this.getBookableService();
+			if (a == true) { 
+				this.addChosenItem(optItem);
+			}
+			else {
+				this.removeChosenItem(optItem);
+			}
+		}
+		return;
+	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private void rejectUpdateAppointment() {
+		throw new RuntimeException("unsuccessful");
+	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private void rejectCancelAppointment() {
+		throw new RuntimeException("unsuccessful");
+	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private boolean isDuringTimeSlot(){
+		boolean isDuringTimeSlot = false;
+
+		Date systemDate = SystemTime.getSystemDate();
+		Time systemTime = SystemTime.getSystemTime();
+
+		Time appointmentStartTime = this.timeSlot.getStartTime();
+		Date appointmentDate = this.timeSlot.getStartDate();
+		Time appointmentEndTime = this.timeSlot.getEndTime();
+
+		if (systemDate.compareTo(appointmentDate) == 0 && (systemTime.compareTo(appointmentStartTime) >= 0 && systemTime.compareTo(appointmentEndTime) <= 0)) {
+			isDuringTimeSlot = true;
+		}
+		return isDuringTimeSlot;
+	}
+	
+	
+	/**
+	* @author antoninguerre
+	*/
+	private boolean sameDay(){
+		boolean sameDay = false;
+
+		Date appointmentDate = this.getTimeSlot().getStartDate();
+		Date systemDate = SystemTime.getSystemDate();
+
+		if (appointmentDate.compareTo(systemDate) == 0) {
+			sameDay = true;
+			return sameDay;
+		}
+
+		return sameDay;
+	}
+	
+	/**
+	* @author antoninguerre
+	*/
+	private boolean isTimeSlotAvailable(TimeSlot ts){
+		
+		if (!(this.getTimeSlot().getStartTime().compareTo(ts.getStartTime()) == 0) || !(this.getTimeSlot().getEndTime().compareTo(ts.getEndTime()) == 0)) {
+
+			String dateString = ts.getStartDate().toString();
+			if(dateString.contains("2019")) {
+				return false;
+			}
+
+			String dayOfTheWeek = new SimpleDateFormat("EEEE").format(ts.getStartDate());
+			if (dayOfTheWeek.equals("Saturday") || dayOfTheWeek.equals("Sunday")) {
+				return false;
+			}
+
+			for (BusinessHour bh : flexiBook.getHours()) {
+
+				if (dayOfTheWeek.equals(bh.getDayOfWeek().toString())) {
+					Time businessStartTime = bh.getStartTime();
+					Time businessEndTime = bh.getEndTime();
+					if (ts.getStartTime().before(businessStartTime) || ts.getEndTime().after(businessEndTime)) {
+						return false;
+					}
+				}
+			}
+
+			for (Appointment appointment : flexiBook.getAppointments()) {
+				TimeSlot appDowntime = getAppointmentDowntime(appointment);
+				
+				if (ts.getStartDate().equals(appointment.getTimeSlot().getStartDate())) {
+
+					if ((ts.getStartTime().after(appointment.getTimeSlot().getStartTime()) 
+							&& ts.getStartTime().before(appointment.getTimeSlot().getEndTime())) 
+							|| (ts.getEndTime().after(appointment.getTimeSlot().getStartTime()) 
+									&& ts.getEndTime().before(appointment.getTimeSlot().getEndTime()))
+									|| (ts.getStartTime().before(appointment.getTimeSlot().getStartTime())
+											&& ts.getEndTime().after(appointment.getTimeSlot().getEndTime()))
+											|| (ts.getStartTime().equals(appointment.getTimeSlot().getStartTime()))
+													|| (ts.getEndTime().equals(appointment.getTimeSlot().getEndTime()))) {
+
+						if (appointment.equals(this))
+							break;
+
+						if (appDowntime != null) {
+							if (ts.getStartTime().after(appDowntime.getStartTime()) && ts.getEndTime().before(appDowntime.getEndTime())
+									|| (ts.getStartTime().equals(appDowntime.getStartTime()) && ts.getEndTime().equals(appDowntime.getEndTime()))) {
+								break;
+							}
+						}
+						return false;
+					}
+				}
+			}
+
+			for (int i = 0; i < flexiBook.getBusiness().getHolidays().size(); i++) {
+				TimeSlot holiday = flexiBook.getBusiness().getHoliday(i);
+				TimeSlot holidayFirst = flexiBook.getBusiness().getHoliday(0);
+				TimeSlot holidayLast = flexiBook.getBusiness().getHoliday(flexiBook.getBusiness().getHolidays().size()-1);
+				
+				if(holidayFirst.getStartTime().after(ts.getEndTime()))
+					break;
+				
+				if(holidayLast.getEndTime().before(ts.getStartTime()))
+					break;
+				
+				for (LocalDate ld = holiday.getStartDate().toLocalDate(); ld.isBefore(holiday.getEndDate().toLocalDate().plusDays(1)); ld = ld.plusDays(1)) {
+					Date date1 = Date.valueOf(ld);
+					if(date1.compareTo(ts.getStartDate()) == 0) {
+						return false;
+					}
+				}
+			}
+			
+			for (int i=0; i<flexiBook.getBusiness().getVacation().size(); i++) {
+				TimeSlot vacation = flexiBook.getBusiness().getVacation(i);
+				TimeSlot vacationFirst = flexiBook.getBusiness().getVacation(0);
+				TimeSlot vacationLast = flexiBook.getBusiness().getVacation(flexiBook.getBusiness().getVacation().size()-1);
+				
+				if(vacationFirst.getStartTime().after(ts.getEndTime()))
+					break;
+				
+				if(vacationLast.getEndTime().before(ts.getStartTime()))
+					break;
+				
+				for (LocalDate ld = vacation.getStartDate().toLocalDate(); ld.isBefore(vacation.getEndDate().toLocalDate().plusDays(1)); ld = ld.plusDays(1)) {
+					Date date1 = Date.valueOf(ld);
+					if(date1.compareTo(ts.getStartDate())==0) {
+						return false;
+					}
+				}
+			}
+			
+			
+		}
+		return true;
+	}
+	
+	
+	/**
+	 * @author antoninguerre
+	 */
+	private static TimeSlot getAppointmentDowntime(Appointment appointment) {
+
+		long nonDowntimeItemsDuration = 0;
+		LocalTime localAppDowntimeStart = null;
+		LocalTime localAppDowntimeEnd = null;
+		
+		for (int i=0; i<appointment.getChosenItems().size(); i++) {
+			if (appointment.getChosenItem(i).getService().getDowntimeDuration() != 0) {
+				long downtimeStart = appointment.getChosenItem(i).getService().getDowntimeStart();
+				localAppDowntimeStart = appointment.getTimeSlot().getStartTime().toLocalTime().plusMinutes(nonDowntimeItemsDuration).plusMinutes(downtimeStart);
+				localAppDowntimeEnd = localAppDowntimeStart.plusMinutes(appointment.getChosenItem(i).getService().getDowntimeDuration());
+			}
+			else {
+				nonDowntimeItemsDuration += appointment.getChosenItem(i).getService().getDuration();
+			}
+		}
+
+		if (localAppDowntimeStart!=null && localAppDowntimeEnd!=null) {
+			Time appDowntimeStart = Time.valueOf(localAppDowntimeStart);
+			Time appDowntimeEnd = Time.valueOf(localAppDowntimeEnd);
+			TimeSlot downtimeTimeSlot = new TimeSlot(appointment.getTimeSlot().getStartDate(), appDowntimeStart, appointment.getTimeSlot().getStartDate(), appDowntimeEnd, appointment.getFlexiBook());
+			return downtimeTimeSlot;
+		}
+		else 
+			return null;
+	}
+  
+	
+}
+		
+		
+	
